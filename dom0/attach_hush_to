@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# did the user add the vm as input parameter?
+if [ ! ${1} ]; then
+	echo "Usage: $0 <vm_name>"
+	exit 1
+fi
+
+#block="dom0:mmcblk0p1"
+block=${SDCARD_BLOCK}
+
+# does the vm exist?
+vm=""
+for item in $(qvm-ls | grep -v dom0 | awk {'print $1'} | grep ${1})
+do
+	if [ "${item}" == "${1}" ]; then
+		vm=${1}
+	fi
+done
+if [ ${#vm} -eq 0 ]; then
+	echo "No vm with name ${1} exists or can not be used. Aborted."
+	exit 1
+fi
+
+# check if the vm is connected to the internet
+netvm=$(qvm-prefs ${vm} | grep "netvm" | awk {'print $3'})
+if [ "${netvm}" != "None" ]; then
+	echo "${vm} might be connected to the internet. Aborted."
+	echo "Check: qvm-prefs ${vm} | grep netvm"
+	exit 1
+fi
+
+# check if the vm is labeled as green
+#label=$(qvm-prefs ${vm} | grep label | awk {'print $3'})
+#if [ "${label}" != "green" ]; then
+#	echo "The vm ${vm} is not labeled as green but ${label}. Aborted."
+#	exit 1
+#fi
+
+# detach sdcard if already attached to some other vm
+ovm=$(qvm-block list | grep ${block} | awk {'print $3'} | cut -d" " -f1)
+if [ ${#ovm} -gt 0 ]; then
+
+	if [ "${ovm}" == "${vm}" ]; then
+	    echo "Block ${SDCARD_BLOCK} is already attached to ${vm}"
+	    exit 0
+	fi
+
+	echo -e "\nBlock ${SDCARD_BLOCK} is currently attached to ${ovm}."
+        echo "Please umount it properly from there and rerun this program."
+	exit 1
+
+	# slam tombs open in the vm
+	#qvm-run -u user ${ovm} '/usr/local/bin/tomb slam all'
+
+	# umount sdcard from the vm
+	#qvm-run -u user ${ovm} '/usr/local/bin/risks umount sdcard'
+
+	# detach the sdcard
+	#qvm-block detach ${ovm} ${block}
+        #if [ $? != 0 ]; then
+	#	echo "Block ${block} can not be detached from ${ovm}. Aborted."
+	#	exit
+	#fi	
+fi
+
+# is the vm running?
+qvm-ls | grep Running | awk {'print $1'} | grep "^"${vm}"$" &> /dev/null
+if [ "$?" != "0" ]; then
+	qvm-start ${vm}
+	sleep 15
+fi
+
+# finally attach the sdcard encrypted partition to the qube
+qvm-block attach ${vm} ${block}
+if [[ $? -eq 0 ]]; then
+	echo "Block ${SDCARD_BLOCK} has been attached to ${vm}"
+else
+	echo "Block ${SDCARD_BLOCK} can not be attached to ${vm}"
+fi
+
