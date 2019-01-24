@@ -1,0 +1,545 @@
+#!/bin/bash
+
+# exit value: 0	-> all good
+# exit value: 1	-> error
+# exit value: 2	-> configuration error
+
+# DEFAULTS
+
+usage()
+{
+	echo "Usage: $0 action resource identity"
+	echo ""
+	echo "action: list"
+	echo "        |_ coffins"
+	echo "        |_ tombs"
+	echo ""
+	echo "action: mount | rw | ro"
+	echo "        |_ hush"
+	echo ""
+	echo "action: open | close"
+	echo "        |_ coffin|gpg <identity>"
+	echo "        |_ tomb-type <identity>"
+	echo "        |_ identity <identity>"
+	echo ""
+	echo "action: gpgpass <identity>"
+	echo ""
+	echo "Ex.:"
+	echo "$0 open gpg <identity>"
+	echo "$0 open ssh <identity>"
+	echo "$0 open pass <identity>"
+	echo "$0 open identity <identity>  #opens gpg coffin, pass tomb and ssh tomb all in once"
+	echo "$0 close identity <identity>  #closes gpg coffin, pass tomb and ssh tomb all in once"
+}
+
+# Checks if a global var has been configured.
+# Parameter: ${1}: global var name
+global_var_check()
+{
+	#echo "var name: ${1}, var value ${!1}"
+	if [ -z ${!1} ]; then
+		echo "Something is wrong with your global var: ${1} is not defined"
+		echo "Check your ~/.bashrc"
+		exit 2
+	fi
+
+}
+
+# Plays sounds
+# Package `sox` provides the "play" program: sudo apt-get install sox
+play_sound()
+{
+	if [ ${SDCARD_QUIET} -gt 0 ] || [ ! -x "$(command -v play)" ]; then
+		return 1
+	fi
+
+	case $1 in
+
+		plugged)
+			if [ -f /usr/share/sounds/freedesktop/stereo/device-added.oga ]; then
+				play -V0 /usr/share/sounds/freedesktop/stereo/device-added.oga &> /dev/null
+			fi
+		;;
+
+		unplugged)
+
+			if [ -f /usr/share/sounds/freedesktop/stereo/device-removed.oga ]; then
+				play -V0 /usr/share/sounds/freedesktop/stereo/device-removed.oga &> /dev/null
+			fi
+		;;
+
+		*)
+			return 1
+		;;
+	esac
+}
+
+# Checks if the "hush partition" has been seen by kernel and returns 0 if true
+is_partition_mapper_present()
+{
+	ls -1 /dev/${SDCARD_ENC_PART_MAPPER} &> /dev/null
+}
+
+# Checks if the "hush partition" has been already decrypted and returns 0 if true
+is_luks_mapper_present()
+{
+	ls -1 /dev/mapper/${SDCARD_ENC_PART_MAPPER} &> /dev/null
+}
+
+# Checks if the "hush partition" is already mounted and returns 0 if true
+is_hush_mounted()
+{
+	mount | grep "^/dev/mapper/${SDCARD_ENC_PART_MAPPER}" &> /dev/null
+}
+
+mount_hush()
+{
+	global_var_check "SDCARD_ENC_PART"
+	global_var_check "SDCARD_ENC_PART_MAPPER"
+	global_var_check "HUSH_DIR"
+	global_var_check "SDCARD_QUIET"
+
+	if ! is_partition_mapper_present ; then
+		echo "Device mapper /dev/${SDCARD_ENC_PART_MAPPER} not found."
+		echo "Be sure you have attached your hush partition."
+		exit 1
+	fi
+
+	if is_hush_mounted ; then
+		echo "Sdcard already mounted"
+		play_sound
+		exit 0
+	fi
+
+	if ! is_luks_mapper_present ; then
+		# decrypts the "hush partition": it will ask for passphrase
+		if ! sudo cryptsetup open --type luks ${SDCARD_ENC_PART} ${SDCARD_ENC_PART_MAPPER} ; then
+			echo "The hush partition ${SDCARD_ENC_PART} can not be decrypted"
+			exit 1
+		fi
+	fi
+
+	# creates the "hush partition" mount point if it doesn't exist
+	if [ ! -d ${HUSH_DIR} ]; then
+	    mkdir -p ${HUSH_DIR} &> /dev/null
+	fi
+
+	# mounts the "hush partition" in read-only mode by default
+	if ! sudo mount -o ro /dev/mapper/${SDCARD_ENC_PART_MAPPER} ${HUSH_DIR} ; then
+		echo "/dev/mapper/${SDCARD_ENC_PART_MAPPER} can not be mounted on ${HUSH_DIR}"
+		exit 1
+	fi
+
+
+	play_sound "plugged"
+
+	echo -e "\nSDCARD has been mounted read-only. To give write permissions, use:"
+	echo -e "$0 rw hush\n"
+}
+
+umount_hush()
+{
+	global_var_check "SDCARD_ENC_PART"
+	global_var_check "SDCARD_ENC_PART_MAPPER"
+	global_var_check "HUSH_DIR"
+	global_var_check "SDCARD_QUIET"
+
+	if ! is_partition_mapper_present ; then
+		echo "Device mapper /dev/mapper/${SDCARD_ENC_PART_MAPPER} not found."
+		echo "Be sure you have attached your hush partition."
+		exit 1
+	fi
+
+	if is_hush_mounted ; then
+		if ! sudo umount -f ${HUSH_DIR} ; then
+			echo "/dev/mapper/${SDCARD_ENC_PART_MAPPER} can not be umounted from ${HUSH_DIR}"
+			exit 1
+		fi
+	fi
+
+	if is_luks_mapper_present ; then
+		if ! sudo cryptsetup close ${SDCARD_ENC_PART_MAPPER} ; then
+			echo "SDCARD can not be closed"
+			exit 1
+		fi
+	fi
+
+	play_sound "unplugged"
+
+	echo -e "\nSDCARD is ready to be detached from this qube"
+}
+
+
+ro_hush()
+{
+	global_var_check "SDCARD_ENC_PART"
+	global_var_check "SDCARD_ENC_PART_MAPPER"
+	global_var_check "HUSH_DIR"
+
+	if ! is_hush_mounted ; then
+		echo "HUSH is not mounted"
+		exit 1
+	fi
+
+	mount_option="remount,ro"
+	if ! sudo mount -o ${mount_option} /dev/mapper/${SDCARD_ENC_PART_MAPPER} ${HUSH_DIR} &> /dev/null ; then
+		echo "/dev/mapper/${SDCARD_ENC_PART_MAPPER} can not be re-mounted with read-only permissions"
+		exit 1
+	fi
+
+	echo "HUSH is now mounted read-only"
+}
+
+rw_hush()
+{
+	global_var_check "SDCARD_ENC_PART"
+	global_var_check "SDCARD_ENC_PART_MAPPER"
+	global_var_check "HUSH_DIR"
+
+	if ! is_hush_mounted ; then
+		echo "SDCARD is not mounted"
+		exit 1
+	fi
+
+	mount_option="remount,rw"
+
+	if ! sudo mount -o ${mount_option} /dev/mapper/${SDCARD_ENC_PART_MAPPER} ${HUSH_DIR} &> /dev/null ; then
+		echo "/dev/mapper/${SDCARD_ENC_PART_MAPPER} can not be re-mounted with write permissions"
+		exit 1
+	fi
+
+	sudo chown ${USER} ${HUSH_DIR}
+
+	echo ""
+	echo "###################################"
+	echo "Warning! HUSH is writable"
+	echo "Do not unplug without umounting it!"
+	echo "###################################"
+}
+
+get_tomb_mapper(){
+	ls -1 /dev/mapper/tomb.* &> /dev/null
+	if [[ $? -eq 0 ]]; then
+		ls -1 /dev/mapper/tomb.* | grep ${1}
+	else
+		echo "none"
+	fi
+}
+
+is_luks_open()
+{
+	ls /dev/mapper/${1} &> /dev/null
+}
+
+is_luks_mounted()
+{
+	mount | grep "^${1}" &> /dev/null
+}
+
+open_coffin()
+{
+	global_var_check "HUSH_DIR"
+	global_var_check "GRAVEYARD"
+
+	local IDENTITY="${1}"
+	local coffin_file="${GRAVEYARD}/${IDENTITY}-gpg.coffin"
+	local mapper="coffin-${IDENTITY}-gpg"
+	local key_file="${HUSH_DIR}/${IDENTITY}-gpg.key"
+	local mount_dir="${HOME}/.gnupg"
+
+	if [ ! -f "${coffin_file}" ]; then
+		echo "I'm looking for ${coffin_file} but no coffin file found in ${GRAVEYARD}"
+		exit 1
+	fi
+
+	if is_luks_mounted "/dev/mapper/${mapper}" ; then
+		echo "Coffin file ${coffin_file} is already open and mounted"
+		return 0
+	fi
+
+	if ! is_luks_open ${mapper}; then
+		if ! sudo cryptsetup open --type luks ${coffin_file} ${mapper} --key-file ${key_file} ; then
+			echo "I can not open the coffin file ${coffin_file}"
+			exit 1
+		fi
+	fi
+
+	mkdir -p ${mount_dir} &> /dev/null
+
+	if ! sudo mount -o rw,user /dev/mapper/${mapper} ${mount_dir} ; then
+		echo "Coffin file ${coffin_file} can not be mounted on ${mount_dir}"
+		exit 1
+	fi
+
+	sudo chown ${USER} ${mount_dir}
+	sudo chmod 0700 ${mount_dir}
+	echo "Coffin ${coffin_file} has been opened in ${mount_dir}"
+}
+
+close_coffin(){
+
+	global_var_check "GRAVEYARD"
+
+	local IDENTITY="${1}"
+	local mapper="coffin-${IDENTITY}-gpg"
+	local mount_dir="${HOME}/.gnupg"
+	local coffin_file="${GRAVEYARD}/${IDENTITY}-gpg.coffin"
+
+	if is_luks_mounted "/dev/mapper/${mapper}" ; then
+		if ! sudo umount ${mount_dir} ; then
+			echo "Coffin file ${coffin_file} can not be umounted from ${mount_dir}"
+			exit 1
+		fi
+	fi
+
+	if is_luks_open ${mapper}; then
+		if ! sudo cryptsetup close /dev/mapper/${mapper} ; then
+			echo "Coffin file ${coffin_file} can not be closed"
+			exit 1
+		fi
+	else
+		echo "Coffin file ${coffin_file} is already closed"
+		return 0
+	fi
+
+	echo "Coffin file ${coffin_file} has been closed"
+}
+
+open_tomb()
+{
+	global_var_check "GRAVEYARD"
+	global_var_check "HUSH_DIR"
+
+	local RESOURCE="${1}"
+	local IDENTITY="${2}"
+	local tomb_file="${GRAVEYARD}/${IDENTITY}-${RESOURCE}.tomb"
+	local key_file="${HUSH_DIR}/${IDENTITY}-${RESOURCE}.key"
+	local mapper=$(get_tomb_mapper ${IDENTITY}-${RESOURCE})
+
+	case ${RESOURCE} in
+		gpg)
+			local mount_dir="${HOME}/.gnupg"
+		;;
+		pass)
+			local mount_dir="${HOME}/.password-store"
+		;;
+		ssh)
+			local mount_dir="${HOME}/.ssh"
+		;;
+		*)
+			local mount_dir="${HOME}/.tomb/${resource}"
+		;;
+	esac
+
+	if [ "${mapper}" != "none" ]; then
+		if is_luks_mounted "/dev/mapper/tomb.${IDENTITY}-${RESOURCE}" ; then
+			echo "Tomb ${IDENTITY}-${RESOURCE} is already open and mounted"
+			return 0
+		fi
+	fi
+
+	if [ ! -f "${tomb_file}" ]; then
+		echo "No tomb file ${tomb_file} found"
+		return 2
+	fi
+
+	if [ ! -f "${key_file}" ]; then
+		echo "No key file ${key_file} found"
+		return 2
+	fi
+
+	# checks if the gpg coffin is mounted
+	if ! is_luks_mounted "/dev/mapper/coffin-${IDENTITY}-gpg" ; then
+		echo -e "\nOpening ${IDENTITY} GPG coffin ..."
+		open_coffin ${IDENTITY}
+	fi
+
+	if [ ! -d ${mount_dir} ]; then
+		mkdir -p ${mount_dir}
+	fi
+
+	tomb open -g -k "${key_file}" "${tomb_file}" "${mount_dir}"
+
+	if [ "${RESOURCE}" == "ssh" ]; then
+		ssh-add
+	fi
+}
+
+close_tomb()
+{
+	local RESOURCE="${1}"
+	local IDENTITY="${2}"
+
+	if ! get_tomb_mapper ${IDENTITY}-${RESOURCE} &> /dev/null ; then
+		echo "Tomb ${IDENTITY}-${RESOURCE} is already closed"
+		return 0
+	fi
+
+	tomb close ${IDENTITY}-${RESOURCE}
+
+	if [ "${RESOURCE}" == "ssh" ]; then
+		ssh-add -D
+	fi
+
+}
+
+list_coffins()
+{
+	local coffins_num=0
+
+	if ls -1 /dev/mapper/coffin-* &> /dev/null; then
+		local coffins=$(ls -1 /dev/mapper/coffin-*| awk -F- {'print $2'})
+		local coffins_num=$(echo ${coffins} | wc -l)
+	fi
+
+	if [ ${coffins_num} -gt 0 ]; then
+		echo "Coffins currently open:"
+		echo $(echo ${coffins} | xargs)
+	fi
+}
+
+gpgpass()
+{
+	global_var_check "HUSH_DIR"
+
+	file="${HUSH_DIR}/${resource}-gpg.ssl"
+	if [ ! -f ${file} ]; then
+		echo "File ${file} does not exist"
+		exit 1
+	fi
+
+	passphrase=$(cat "${file}" | openssl enc -aes-256-cbc -a -d)
+
+	echo -n "${passphrase}" | xclip -selection clipboard
+
+	seconds=45
+
+	echo -e "\nThe passphrase has been saved in clipboard"
+	echo "Press CTRL+V to use the content in this qube"
+	echo "Press CTRL+SHIFT+C to share the clipboard with another qube"
+	echo "In the other qube, press CTRL+SHIFT+v and then CTRL+V to use the clipboard content"
+	echo "Local clipboard will be erased is ${seconds} seconds"
+	( sleep ${seconds}; echo -n "" |xclip -selection clipboard;) &
+}
+
+
+if [[ $EUID -eq 0 ]]; then
+   echo "This script must be run as user"
+   exit 2
+fi
+
+if [ ! ${1} ] || [ ! ${2} ]; then
+	usage
+	exit 2
+fi
+
+action=${1}
+resource=${2}
+
+if [ "${resource}" != "hush" ] && [ "${action}" != "list" ] && [ "${action}" != "gpgpass" ] && [ ! ${3} ]; then
+	echo "Wrong arguments"
+	usage
+	exit 2
+else
+	identity=${3}
+fi
+
+case ${action} in
+
+	mount)
+		if [ "${resource}" == "hush" ]; then
+			mount_hush
+		fi
+	;;
+
+	umount)
+		if [ "${resource}" == "hush" ]; then
+			umount_hush
+		fi
+	;;
+
+	rw)
+		if [ "${resource}" == "hush" ]; then
+			rw_hush
+			exit $?
+		fi
+	;;
+
+	ro)
+		if [ "${resource}" == "hush" ]; then
+			ro_hush
+			exit $?
+		fi
+	;;
+
+	open)
+		if [ "${resource}" == "gpg" ] || [ "${resource}" == "coffin" ]; then
+			open_coffin ${identity}
+			exit $?
+		else
+			# Bulk load
+			if [ "${resource}" == "identity" ]; then
+				echo -e "\nOpening GPG coffin ..."
+				open_coffin ${identity}
+
+				echo -e "\nOpening SSH tomb ... "
+				open_tomb ssh ${identity}
+
+				echo -e "\nOpening PASS tomb ..."
+				open_tomb pass ${identity}
+				exit 0
+			fi
+
+			open_tomb ${resource} ${identity}
+			exit $?
+		fi
+	;;
+
+	close)
+		if [ "${resource}" == "gpg" ] || [ "${resource}" == "coffin" ]; then
+			close_coffin ${identity}
+			exit $?
+		else
+			# Bulk load
+			if [ "${resource}" == "identity" ]; then
+				echo -e "\nClosing PASS tomb ..."
+				close_tomb pass ${identity}
+
+				echo -e "\nCLosing SSH tomb ..."
+				close_tomb ssh ${identity}
+
+				echo -e "\nClosing GPC coffin ..."
+				close_coffin ${identity}
+				exit 0
+			fi
+
+			close_tomb ${resource} ${identity}
+			exit $?
+		fi
+	;;
+
+	list)
+		if [ "${resource}" == "coffins" ]; then
+			list_coffins
+			exit $?
+		fi
+
+		if [ "${resource}" == "tombs" ]; then
+			tomb list
+			exit $?
+		fi
+
+		echo "unknown resource ${resource}"
+		exit 1
+	;;
+
+	gpgpass)
+		gpgpass
+	;;
+
+	*)
+		echo "unknown action"
+		usage
+		exit 1
+	;;
+esac

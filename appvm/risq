@@ -1,0 +1,136 @@
+#!/bin/bash
+
+# exit value: 0	-> all good
+# exit value: 1	-> error
+# exit value: 2	-> configuration error
+
+# DEFAULTS
+
+usage()
+{
+	echo "$0 for AppVm - tomb wrapper"
+	echo "Usage: $0 $action $resource"
+	echo ""
+	echo "action: open|close <tomb name>"
+	echo ""
+	echo "action: pass < <pass command>"
+	echo ""
+	echo "Ex.:"
+	echo "$0 open mytomb"
+	echo "$0 close mytomb"
+	echo "$0 pass list"
+}
+
+# Checks if a global var has been configured.
+# Parameter: ${1}: global var name
+global_var_check()
+{
+	#echo "var name: ${1}, var value ${!1}"
+	if [ -z ${!1} ]; then
+		echo "Something is wrong with your global var: ${1} is not defined"
+		echo "Check your ~/.bashrc"
+		exit 2
+	fi
+
+}
+
+pass_show()
+{
+	local seconds=45
+	local output=$(qvm-pass ${@} | head -n 1)
+	if echo ${output} | grep "^mpw " &> /dev/null; then
+		if command -v mpw &> /dev/null; then
+			# mpw is launched and the password is stored in $password
+			local password=$(eval $output)
+		else
+			echo "mpw is not installed"
+			exit 1
+		fi
+	else
+			local password=${output}
+	fi
+
+	# shows the content of the password file but the password
+	qvm-pass ${@} | tail -n +2
+
+	#copies the password to clipboard
+	echo -n "${password}" | xclip -selection clipboard
+	echo "Password has been saved in clipboard"
+	echo "Press CTRL+V to use the content in this qube"
+	echo "Press CTRL+SHIFT+C to share the clipboard with another qube"
+	echo "In the other qube, press CTRL+SHIFT+v and then CTRL+V to use the clipboard content"
+	echo "Local clipboard will be erased is ${seconds} seconds"
+	( sleep ${seconds}; echo -n "" |xclip -selection clipboard;) &
+}
+
+if [[ $EUID -eq 0 ]]; then
+   echo "This script must be run as user"
+   exit 2
+fi
+
+if [ ! ${1} ]; then
+	usage
+	exit 2
+fi
+
+action=${1}
+resource=${2}
+
+case ${action} in
+
+	open)
+		global_var_check "GRAVEYARD"
+		global_var_check "HUSH_DIR"
+		global_var_check "TOMB_DIR"
+
+		tomb_file="${GRAVEYARD}/${resource}.tomb"
+		key_file="${HUSH_DIR}/${resource}.key"
+
+		if [ ! -f ${tomb_file} ]; then
+			echo "Tomb file ${tomb_file} not found"
+			exit 1
+		fi
+		tomb-split open -g -k ${key_file} ${tomb_file} ${TOMB_DIR}
+	;;
+
+	close)
+		tomb-split close ${RESOURCE}
+	;;
+
+	list)
+		tomb-split list
+	;;
+
+	pass)
+		if [ "${resource}" == "" ] ; then
+			usage
+			exit 1
+		fi
+		arguments=$@
+		arguments=${arguments[@]:4} 		#removes "pass" from the arguments
+
+		case "${resource}" in
+			copy|cp) shift;				qvm-pass "${arguments}" ;;
+			delete|rm|remove) shift;	qvm-pass "${arguments}" ;;
+			edit) shift;				qvm-pass "${arguments}" ;;
+			find|search) shift;			qvm-pass "${arguments}" ;;
+			generate) shift;			qvm-pass "${arguments}" ;;
+			git) shift;					qvm-pass "${arguments}" ;;
+			grep) shift;				qvm-pass "${arguments}" ;;
+			help|--help) shift;			qvm-pass "${arguments}" ;;
+			init) shift;				qvm-pass "${arguments}" ;;
+			insert|add) shift;			qvm-pass "${arguments}" ;;
+			ls|list) shift;				qvm-pass "${arguments}" ;;
+			rename|mv) shift;			qvm-pass "${arguments}" ;;
+			show) shift;				pass_show "${arguments}";;
+			version|--version) shift;	qvm-pass "${arguments}" ;;
+			*)							pass_show "${arguments}"
+		esac
+	;;
+
+	*)
+		echo "unknown action"
+		usage
+		exit 1
+	;;
+esac
